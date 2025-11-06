@@ -157,3 +157,9 @@ for epoch in range(epochs):
     print(f"✅ Epoch {epoch+1}/{epochs} | Loss={avg_loss:.4f} | Saved {ckpt_path}")
 
 print("🎉 Fine-tuning complete!")
+
+import json
+vocab_path = fine_tune_dir / "extended_vocab.json"
+with open(vocab_path, "w") as f:
+    json.dump(vocab, f, indent=2)
+print(f"🧩 Saved extended vocab → {vocab_path}")

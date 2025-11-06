@@ -7,9 +7,19 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import torch
 import torch.nn as nn
 import random
+import json
 from pathlib import Path
 import pretty_midi
 from tokenizer.remi_m_tokenizer import REMIMTokenizer
+
+vocab_path = Path("experiments/fine_tuned/extended_vocab.json")
+if vocab_path.exists():
+    with open(vocab_path) as f:
+        vocab = json.load(f)
+    print(f"✅ Loaded extended vocab ({len(vocab)} tokens)")
+else:
+    from tokenizer.remi_m_tokenizer import vocab
+    print(f"⚠️ Using default tokenizer vocab ({len(vocab)} tokens)")
 
 # -----------------------------
 # Model Definition (same as training)
