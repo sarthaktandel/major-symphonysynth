@@ -11,6 +11,11 @@ import json
 from pathlib import Path
 import pretty_midi
 from tokenizer.remi_m_tokenizer import REMIMTokenizer
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--seed", type=str, default=None)
+args = parser.parse_args()
 
 vocab_path = Path("experiments/fine_tuned/extended_vocab.json")
 if vocab_path.exists():
@@ -44,7 +49,7 @@ class MelodyTransformer(nn.Module):
 # -----------------------------
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 checkpoint_path = "experiments/fine_tuned/fine_tuned_epoch3.pt"
-seed_midi_path = "data/fine_tune_hinduraga/Bageshri.mid"
+seed_midi_path = args.seed if args.seed else "data/fine_tune_hinduraga/Bageshri.mid"
 save_dir = Path("outputs")
 save_dir.mkdir(exist_ok=True)
 
@@ -54,6 +59,14 @@ print("\n🎵 Melody Generator (int-compatible)")
 # Load tokenizer and model
 # -----------------------------
 tokenizer = REMIMTokenizer()
+
+# ✅ force tokenizer to use extended vocab
+if vocab_path.exists():
+    tokenizer.vocab = vocab
+    tokenizer.token2id = {t: i for i, t in enumerate(vocab)}
+    tokenizer.id2token = {i: t for i, t in enumerate(vocab)}
+
+ckpt = torch.load(checkpoint_path, map_location=device)
 ckpt = torch.load(checkpoint_path, map_location=device)
 
 if "embedding.weight" in ckpt:
@@ -105,29 +118,114 @@ print(f"🎶 Seed length: {len(seed_ids)}")
 input_ids = torch.tensor([seed_ids], dtype=torch.long, device=device)
 generated = input_ids
 max_new_tokens = 512
-temperature = 1.1
-top_k = 10
+temperature = 0.9
+top_k = 20
 
-def sample_top_k_logits(logits, top_k=10, temperature=1.0):
+def sample_top_k_logits(logits, prev_token, tokenizer, time_shift_count, top_k=10, temperature=1.0):
     logits = logits / max(temperature, 1e-8)
-    if top_k <= 0:
-        probs = torch.softmax(logits, dim=-1)
-        return torch.multinomial(probs, 1).item()
-    values, indices = torch.topk(logits, top_k)
-    probs = torch.softmax(values, dim=-1)
-    idx = torch.multinomial(probs, 1)
-    return indices[idx].item()
+
+    probs = torch.softmax(logits, dim=-1)
+    values, indices = torch.topk(probs, top_k)
+
+    valid_indices = []
+
+    for idx in indices:
+        token = tokenizer.id2token.get(idx.item(), None)
+
+        # 🔒 SAFETY CHECK
+        if token is None or not isinstance(token, str):
+            continue
+        
+        # -----------------------------
+        # 🎼 DURATION CONSTRAINT
+        # -----------------------------
+        if prev_token is not None and isinstance(prev_token, str):
+            if prev_token.startswith("Note_on") and not token.startswith("Duration"):
+                continue
+
+        # -----------------------------
+        # BASIC GRAMMAR RULES
+        # -----------------------------
+        if prev_token is not None and isinstance(prev_token, str):
+            if prev_token.startswith("Bar") and not token.startswith("Position"):
+                continue
+            if prev_token.startswith("Position") and not token.startswith("Note_on"):
+                continue
+
+        # -----------------------------
+        # LIMIT TIME SHIFT
+        # -----------------------------
+        if token.startswith("Time_shift") and time_shift_count > 3:
+            continue
+
+        valid_indices.append(idx)
+
+    if len(valid_indices) == 0:
+        valid_indices = indices
+
+    valid_indices = torch.tensor(valid_indices, device=logits.device)
+    valid_probs = probs[valid_indices]
+    valid_probs = valid_probs / valid_probs.sum()
+
+    choice = torch.multinomial(valid_probs, 1)
+    return valid_indices[choice].item()
 
 # -----------------------------
 # Generate
 # -----------------------------
 print("🎹 Generating melody...")
+time_shift_count = 0
+MAX_TIME_SHIFT = 4
+
 with torch.no_grad():
     for _ in range(max_new_tokens):
         logits = model(generated)
         next_logits = logits[:, -1, :].squeeze(0)
-        next_id = sample_top_k_logits(next_logits, top_k=top_k, temperature=temperature)
+
+        # 🚫 Block UNK
+        if hasattr(tokenizer, "token2id") and "UNK" in tokenizer.token2id:
+            unk_id = tokenizer.token2id["UNK"]
+            next_logits[unk_id] = -1e9
+
+        # get previous token safely
+        prev_token = tokenizer.id2token.get(generated[0, -1].item(), None)
+        if not isinstance(prev_token, str):
+            prev_token = None
+
+        # sample next token
+        next_id = sample_top_k_logits(
+            next_logits,
+            prev_token,
+            tokenizer,
+            time_shift_count,
+            top_k=top_k,
+            temperature=temperature
+        )
+
+        # track time shift
+        token = tokenizer.id2token.get(next_id, None)
+        if isinstance(token, str):
+            if token.startswith("Time_shift"):
+                time_shift_count += 1
+            else:
+                time_shift_count = 0
+
+        # append token
         next_id_tensor = torch.tensor([[next_id]], dtype=torch.long, device=device)
+        generated = torch.cat([generated, next_id_tensor], dim=1)
+
+# skip invalid tokens
+        if token is None or not isinstance(token, str):
+            continue
+
+        # ⏱ Time shift control
+        if token.startswith("Time_shift"):
+            time_shift_count += 1
+        else:
+            time_shift_count = 0
+
+        if time_shift_count > MAX_TIME_SHIFT:
+            continue
         generated = torch.cat([generated, next_id_tensor], dim=1)
 
 generated_ids = generated[0].tolist()
@@ -144,16 +242,15 @@ print("🎼 Converting tokens → MIDI...")
 
 # Proper conversion from int → string before decoding
 try:
-    if token_type == "int":
-        # ensure tokenizer has id2token mapping
-        if hasattr(tokenizer, "id2token"):
-            tokens = [tokenizer.id2token[i] for i in generated_ids if i < len(tokenizer.id2token)]
-        else:
-            print("⚠️ tokenizer.id2token not found — building temporary reverse map")
-            id2token = {i: t for i, t in enumerate(tokenizer.vocab)}
-            tokens = [id2token[i] for i in generated_ids if i in id2token]
-    else:
-        tokens = generated_ids  # already string tokens
+    tokens = []
+
+    for i in generated_ids:
+        token = tokenizer.id2token.get(i, None)
+        if token is None:
+            continue
+        tokens.append(token)
+    
+    print(f"🎯 Converted {len(tokens)} tokens to string format")
 
     tokenizer.tokens_to_midi(tokens, out_path=str(midi_path))
     print(f"✅ MIDI saved → {midi_path}")

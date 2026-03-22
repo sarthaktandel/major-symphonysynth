@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual env
+venv/
+.env/
+
+# Mac
+.DS_Store
+
+# Outputs
+outputs/
+temp_seed.mid
+
+# Logs
+*.log
+
+# Large model files (optional but recommended)
+*.pt
+*.pth
+*.ckpt
+
+# Jupyter
+.ipynb_checkpoints/
