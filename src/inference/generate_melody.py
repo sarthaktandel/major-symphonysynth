@@ -12,6 +12,7 @@ from pathlib import Path
 import pretty_midi
 from tokenizer.remi_m_tokenizer import REMIMTokenizer
 import argparse
+from src.models.melody_model_mamba import MelodyTransformerMamba
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--seed", type=str, default=None)
@@ -48,11 +49,11 @@ class MelodyTransformer(nn.Module):
 # Config
 # -----------------------------
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-checkpoint_path = "experiments/fine_tuned/fine_tuned_epoch3.pt"
+checkpoint_path = "experiments/mamba_epoch2.pt"
 seed_midi_path = args.seed if args.seed else "data/fine_tune_hinduraga/Bageshri.mid"
 save_dir = Path("outputs")
 save_dir.mkdir(exist_ok=True)
-
+MODEL_TYPE = "mamba"   # or "transformer"
 print("\n🎵 Melody Generator (int-compatible)")
 
 # -----------------------------
@@ -77,7 +78,12 @@ else:
 vocab_size = ckpt_vocab_size
 print(f"✅ Detected vocab size from checkpoint (or tokenizer): {vocab_size}")
 
-model = MelodyTransformer(vocab_size).to(device)
+if MODEL_TYPE == "transformer":
+    model = MelodyTransformer(vocab_size).to(device)
+elif MODEL_TYPE == "mamba":
+    model = MelodyTransformerMamba(vocab_size).to(device)
+else:
+    raise ValueError("Invalid MODEL_TYPE")
 model.load_state_dict(ckpt, strict=False)
 model.eval()
 print(f"✅ Loaded model from {checkpoint_path}")

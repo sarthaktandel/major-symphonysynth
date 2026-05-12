@@ -19,6 +19,7 @@ from datetime import datetime
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+from src.models.melody_model_mamba import MelodyTransformerMamba
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
@@ -29,10 +30,10 @@ DATA_DIR = Path("data/processed")
 CHECKPOINT_DIR = Path("experiments")
 BATCH_SIZE = 8
 SEQ_LEN = 512
-EPOCHS = 10
+EPOCHS = 2
 LR = 2e-4
 DEVICE = "mps" if torch.backends.mps.is_available() else "cuda" if torch.cuda.is_available() else "cpu"
-
+MODEL_TYPE = "mamba"   # "transformer" or "mamba"
 CHECKPOINT_DIR.mkdir(exist_ok=True, parents=True)
 
 # -------------------------------
@@ -130,7 +131,24 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=BATCH_SIZE)
 
-    model = MelodyTransformer(vocab_size).to(DEVICE)
+    if MODEL_TYPE == "transformer":
+        model = MelodyTransformer(vocab_size).to(DEVICE)
+        # 🔥 LOAD pretrained transformer weights
+        pretrained_path = "experiments/fine_tuned/fine_tuned_epoch3.pt"
+        ckpt = torch.load(pretrained_path, map_location=DEVICE)
+
+        model.load_state_dict(ckpt, strict=False)
+        print("✅ Loaded pretrained Transformer weights into hybrid model")
+        # 🔒 Freeze transformer
+        for param in model.transformer.parameters():
+            param.requires_grad = False
+
+        print("🔒 Transformer frozen, training Mamba only")
+    elif MODEL_TYPE == "mamba":
+        model = MelodyTransformerMamba(vocab_size).to(DEVICE)
+    else:
+        raise ValueError("Invalid MODEL_TYPE")
+    
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     criterion = nn.CrossEntropyLoss()
 
@@ -142,7 +160,7 @@ def main():
 
         print(f"Epoch {epoch}/{EPOCHS} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
 
-        ckpt_path = CHECKPOINT_DIR / f"transformer_epoch{epoch}.pt"
+        ckpt_path = CHECKPOINT_DIR / f"{MODEL_TYPE}_epoch{epoch}.pt"
         torch.save(model.state_dict(), ckpt_path)
         print(f"💾 Saved checkpoint: {ckpt_path}")
 
